@@ -13,6 +13,7 @@ from pathlib import Path
 from threading import Thread
 
 import cv2
+cv2.setLogLevel(1)
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -66,16 +67,28 @@ def create_dataloader(path, imgsz, batch_size, stride, opt, hyp=None, augment=Fa
                       rank=-1, world_size=1, workers=8, image_weights=False, quad=False, prefix=''):
     # Make sure only the first process in DDP process the dataset first, and the following others can use the cache
     with torch_distributed_zero_first(rank):
-        dataset = LoadImagesAndLabels(path, imgsz, batch_size,
-                                      augment=augment,  # augment images
-                                      hyp=hyp,  # augmentation hyperparameters
-                                      rect=rect,  # rectangular training
-                                      cache_images=cache,
-                                      single_cls=opt.single_cls,
-                                      stride=int(stride),
-                                      pad=pad,
-                                      image_weights=image_weights,
-                                      prefix=prefix)
+        if path.endswith("txt"):
+            dataset = LoadImagesAndLabels(path, imgsz, batch_size,
+                                        augment=augment,  # augment images
+                                        hyp=hyp,  # augmentation hyperparameters
+                                        rect=rect,  # rectangular training
+                                        cache_images=cache,
+                                        single_cls=opt.single_cls,
+                                        stride=int(stride),
+                                        pad=pad,
+                                        image_weights=image_weights,
+                                        prefix=prefix)
+        else:
+            dataset = LoadImagesAndLabelsCOCO(path, imgsz, batch_size,
+                                        augment=augment,  # augment images
+                                        hyp=hyp,  # augmentation hyperparameters
+                                        rect=rect,  # rectangular training
+                                        cache_images=cache,
+                                        single_cls=opt.single_cls,
+                                        stride=int(stride),
+                                        pad=pad,
+                                        image_weights=image_weights,
+                                        prefix=prefix)
 
     batch_size = min(batch_size, len(dataset))
     nw = min([os.cpu_count() // world_size, batch_size if batch_size > 1 else 0, workers])  # number of workers
@@ -662,13 +675,217 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         return torch.stack(img4, 0), torch.cat(label4, 0), path4, shapes4
 
 
+class LoadImagesAndLabelsCOCO(LoadImagesAndLabels):
+
+    def __init__(self, path, img_size=640, batch_size=16, augment=False, hyp=None, rect=False, image_weights=False,
+                 cache_images=False, single_cls=False, stride=32, pad=0.0, prefix=''):
+        self.img_size = img_size
+        self.augment = augment
+        self.hyp = hyp
+        self.image_weights = image_weights
+        self.rect = False if image_weights else rect
+        self.mosaic = self.augment and not self.rect  # load 4 images at a time into a mosaic (only during training)
+        self.mosaic_border = [-img_size // 2, -img_size // 2]
+        self.stride = stride
+        self.path = path
+        #self.albumentations = Albumentations() if augment else None
+
+        # Check cache
+        cache_path = Path(path).with_suffix(".cache")  # cached labels
+        if cache_path.is_file():
+            cache, exists = torch.load(cache_path), True  # load
+            #if cache['hash'] != get_hash(self.label_files + self.img_files) or 'version' not in cache:  # changed
+            #    cache, exists = self.cache_labels(cache_path, prefix), False  # re-cache
+        else:
+            from pycocotools.coco import COCO as _COCO
+            self.coco = _COCO(path)
+            self.img_files = sorted([self.coco.imgs[imId]["file_name"] for imId in self.coco.getImgIds()])
+            cache, exists = self.cache_labels(cache_path, prefix), False  # cache
+            del self.coco
+
+        # Display cache
+        nf, nm, ne, nc, n = cache.pop('results')  # found, missing, empty, corrupted, total
+        if exists:
+            d = f"Scanning '{cache_path}' images and labels... {nf} found, {nm} missing, {ne} empty, {nc} corrupted"
+            tqdm(None, desc=prefix + d, total=n, initial=n)  # display cache results
+        assert nf > 0 or not augment, f'{prefix}No labels in {cache_path}. Can not train without labels. See {help_url}'
+
+        # Read cache
+        cache.pop('hash')  # remove hash
+        cache.pop('version')  # remove version
+        labels, shapes, self.segments = zip(*cache.values())
+        self.labels = list(labels)
+        self.shapes = np.array(shapes, dtype=np.float64)
+        self.img_files = list(cache.keys())  # update
+        self.label_files = img2label_paths(cache.keys())  # update
+        if single_cls:
+            for x in self.labels:
+                x[:, 0] = 0
+
+        n = len(shapes)  # number of images
+        bi = np.floor(np.arange(n) / batch_size).astype(np.int)  # batch index
+        nb = bi[-1] + 1  # number of batches
+        self.batch = bi  # batch index of image
+        self.n = n
+        self.indices = range(n)
+
+        # Rectangular Training
+        if self.rect:
+            # Sort by aspect ratio
+            s = self.shapes  # wh
+            ar = s[:, 1] / s[:, 0]  # aspect ratio
+            irect = ar.argsort()
+            self.img_files = [self.img_files[i] for i in irect]
+            self.label_files = [self.label_files[i] for i in irect]
+            self.labels = [self.labels[i] for i in irect]
+            self.shapes = s[irect]  # wh
+            ar = ar[irect]
+
+            # Set training image shapes
+            shapes = [[1, 1]] * nb
+            for i in range(nb):
+                ari = ar[bi == i]
+                mini, maxi = ari.min(), ari.max()
+                if maxi < 1:
+                    shapes[i] = [maxi, 1]
+                elif mini > 1:
+                    shapes[i] = [1, 1 / mini]
+
+            self.batch_shapes = np.ceil(np.array(shapes) * img_size / stride + pad).astype(np.int) * stride
+
+        # Cache images into memory for faster training (WARNING: large datasets may exceed system RAM)
+        self.imgs = [None] * n
+        if cache_images:
+            if cache_images == 'disk':
+                self.im_cache_dir = Path(Path(self.img_files[0]).parent.as_posix() + '_npy')
+                self.img_npy = [self.im_cache_dir / Path(f).with_suffix('.npy').name for f in self.img_files]
+                self.im_cache_dir.mkdir(parents=True, exist_ok=True)
+            gb = 0  # Gigabytes of cached images
+            self.img_hw0, self.img_hw = [None] * n, [None] * n
+            results = ThreadPool(8).imap(lambda x: load_image(*x), zip(repeat(self), range(n)))
+            pbar = tqdm(enumerate(results), total=n)
+            for i, x in pbar:
+                if cache_images == 'disk':
+                    if not self.img_npy[i].exists():
+                        np.save(self.img_npy[i].as_posix(), x[0])
+                    gb += self.img_npy[i].stat().st_size
+                else:
+                    self.imgs[i], self.img_hw0[i], self.img_hw[i] = x
+                    gb += self.imgs[i].nbytes
+                pbar.desc = f'{prefix}Caching images ({gb / 1E9:.1f}GB)'
+            pbar.close()
+
+    def cache_labels(self, path=Path('./labels.cache'), prefix=''):
+        # Cache dataset labels, check images and read shapes
+        x = {}  # dict
+        nm, nf, ne, nc = 0, 0, 0, 0  # number missing, found, empty, duplicate
+        pbar = tqdm(self.coco.getImgIds(), desc='Scanning images', total=len(self.coco.imgs))
+        for i, imId in enumerate(pbar):
+            image = self.coco.imgs[imId]
+            im_file = image["file_name"]
+            annotations = self.coco.imgToAnns[imId]
+            l = []
+            nf += 1
+            for ann in annotations:
+                box = ann["bbox"]
+                box_w = box[2]
+                box_h = box[3]
+                assert box_w > 0
+                assert box_h > 1
+                box[0] += box_w / 2.
+                box[1] += box_h / 2.
+                box[0] /= image["width"]
+                box[1] /= image["height"]
+                box[2] /= image["width"]
+                box[3] /= image["height"]
+                if box[2] > 1:
+                    box[2] = 1
+                    print(im_file, " has some boxes out of image")
+                if box[3] > 1:
+                    box[3] = 1
+                    print(im_file, " has some boxes out of image")
+                category = ann["category_id"]
+                l.append([category] + box)
+            l = np.array(l, dtype=np.float32)
+            if len(l):
+                assert l.shape[1] == 5, 'labels require 5 columns each'
+                assert (l >= 0).all(), 'negative labels'
+                assert (l[:, 1:] <= 1).all(), 'non-normalized or out of bounds coordinate labels'
+                assert np.unique(l, axis=0).shape[0] == l.shape[0], 'duplicate labels'
+            else:
+                ne += 1  # label empty
+                l = np.zeros((0, 5), dtype=np.float32)
+            shape = [image["width"], image["height"]]
+            segments = []
+            x[im_file] = [l, shape, segments]
+            pbar.desc = f"{prefix}Scanning images and labels... " \
+                        f"{nf} found, {nm} missing, {ne} empty, {nc} corrupted"
+        pbar.close()
+
+        if nf == 0:
+            print(f'{prefix}WARNING: No labels found in {path}. See {help_url}')
+
+        x['hash'] = get_hash([self.coco.imgs[imId]["file_name"]
+                              for imId in self.coco.getImgIds()])
+        x['results'] = nf, nm, ne, nc, i + 1
+        x['version'] = 0.1  # cache version
+        torch.save(x, path)  # save for next time
+        logging.info(f'{prefix}New cache created: {path}')
+        return x
+
+
+def make_image_3_channels(img):
+    if len(img.shape) == 2:
+        img = np.stack([img, img, img], axis=2)
+    elif len(img.shape) == 3 and img.shape[2] > 3:
+        img = img[:, :, :3]
+    return img
+
+
+def read_opencv(filename):
+    import cv2
+    img = cv2.imread(filename, 1)
+    if img is None:
+        return None
+    img = make_image_3_channels(img)
+    return img
+
+
+def read_pil(filename):
+    from PIL import Image as PILImage
+    from PIL import ImageFile
+    ImageFile.LOAD_TRUNCATED_IMAGES = True
+    try:
+        img = PILImage.open(filename)
+    except FileNotFoundError:
+        return None
+    img = img.convert('RGB')
+    img = np.asarray(img)
+    img = make_image_3_channels(img)
+    img = img[:, :, ::-1].copy()
+    return img
+
+
+def imread_fallback(filename):
+    """Read image as 3 channels and BGR."""
+    img = read_pil(filename)
+    if img is None:
+        img = read_opencv(filename)
+    if img is None:
+        return None
+    return img
+
+
 # Ancillary functions --------------------------------------------------------------------------------------------------
 def load_image(self, index):
     # loads 1 image from dataset, returns img, original hw, resized hw
     img = self.imgs[index]
     if img is None:  # not cached
         path = self.img_files[index]
-        img = cv2.imread(path)  # BGR
+        #img = imread_fallback("/dev/shm/private-dataset/" + path)
+        #if img is None:
+        img = imread_fallback("/media/nas/private-dataset/" + path)
+        # img = cv2.imread(path)  # BGR
         assert img is not None, 'Image Not Found ' + path
         h0, w0 = img.shape[:2]  # orig hw
         r = self.img_size / max(h0, w0)  # resize image to img_size
