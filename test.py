@@ -71,10 +71,18 @@ def test(data,
     model.eval()
     if isinstance(data, str):
         is_coco = data.endswith('coco.yaml')
-        with open(data) as f:
-            data = yaml.load(f, Loader=yaml.SafeLoader)
-    check_dataset(data)  # check
-    nc = 1 if single_cls else int(data['nc'])  # number of classes
+        is_we = data.endswith(".json")
+        if data.endswith(".json"):
+            with open(data) as f:
+                coco_data = json.load(f)
+            nc = 1 if single_cls else len(coco_data['categories'])
+            image2id = {x["file_name"]: x["id"]  for x in coco_data["images"]}
+        else:
+            with open(data) as f:
+                data = yaml.load(f, Loader=yaml.SafeLoader)
+            check_dataset(data)  # check
+            nc = 1 if single_cls else int(data['nc'])  # number of classes
+
     iouv = torch.linspace(0.5, 0.95, 10).to(device)  # iou vector for mAP@0.5:0.95
     niou = iouv.numel()
 
@@ -87,8 +95,12 @@ def test(data,
         if device.type != 'cpu':
             model(torch.zeros(1, 3, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
         task = opt.task if opt.task in ('train', 'val', 'test') else 'val'  # path to train/val/test images
-        dataloader = create_dataloader(data[task], imgsz, batch_size, gs, opt, pad=0.5, rect=True,
-                                       prefix=colorstr(f'{task}: '))[0]
+        if is_we:
+            dataloader = create_dataloader(data, imgsz, batch_size, gs, opt, pad=0.5, rect=True,
+                                           prefix=colorstr(f'{task}: '))[0]
+        else:
+            dataloader = create_dataloader(data[task], imgsz, batch_size, gs, opt, pad=0.5, rect=True,
+                                        prefix=colorstr(f'{task}: '))[0]
 
     if v5_metric:
         print("Testing with YOLOv5 AP metric...")
@@ -166,7 +178,10 @@ def test(data,
             # Append to pycocotools JSON dictionary
             if save_json:
                 # [{"image_id": 42, "category_id": 18, "bbox": [258.15, 41.29, 348.26, 243.78], "score": 0.236}, ...
-                image_id = int(path.stem) if path.stem.isnumeric() else path.stem
+                if is_we:
+                    image_id = image2id[str(path)]
+                else:
+                    image_id = int(path.stem) if path.stem.isnumeric() else path.stem
                 box = xyxy2xywh(predn[:, :4])  # xywh
                 box[:, :2] -= box[:, 2:] / 2  # xy center to top-left corner
                 for p, b in zip(pred.tolist(), box.tolist()):
@@ -311,6 +326,7 @@ if __name__ == '__main__':
     parser.add_argument('--v5-metric', action='store_true', help='assume maximum recall as 1.0 in AP calculation')
     opt = parser.parse_args()
     opt.save_json |= opt.data.endswith('coco.yaml')
+    print("save json", opt.save_json)
     opt.data = check_file(opt.data)  # check file
     print(opt)
     #check_requirements()
