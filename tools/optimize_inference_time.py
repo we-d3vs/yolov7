@@ -1,5 +1,5 @@
 import torch
-from models.experimental import attempt_load
+from models.experimental import attempt_load, End2End
 
 import os
 
@@ -17,7 +17,6 @@ model = attempt_load("runs/train/yolov7-we-v1042/weights/last.pt",
 
 model.to(device)
 model.eval()
-
 
 test_data = torch.randn(1, 3, 640, 640)
 
@@ -40,7 +39,8 @@ class YOLOWrapper(torch.nn.Module):
     def forward(self, x, *args, **kwargs):
         res = self.model(x)
         return res[0], res[1][0], res[1][1], res[1][2]
-        
+
+
 model_wrapper = YOLOWrapper(model)
 with torch.no_grad():
     out = model_wrapper(test_data.to(device))  # run once
@@ -53,7 +53,7 @@ input_data = [((torch.randn(1, 3, 640, 640), ), torch.tensor([0])) for i in rang
 # Run Speedster optimization
 optimized_model = optimize_model(
   model_wrapper, input_data=input_data,
-  # metric_drop_ths=0.1,
+  metric_drop_ths=0.01,
   store_latencies=True
 )
 
@@ -70,3 +70,6 @@ class OptimizedYOLO(torch.nn.Module):
 optimized_wrapper = OptimizedYOLO(optimized_model)
 
 optimized_wrapper(test_data.cuda())
+
+
+save_model(optimized_model, "yolov7_optimized.pth")
