@@ -82,6 +82,9 @@ def test(data,
                 data = yaml.load(f, Loader=yaml.SafeLoader)
             check_dataset(data)  # check
             nc = 1 if single_cls else int(data['nc'])  # number of classes
+    else:
+        check_dataset(data)  # check
+        nc = 1 if single_cls else int(data['nc'])  # number of classes
 
     iouv = torch.linspace(0.5, 0.95, 10).to(device)  # iou vector for mAP@0.5:0.95
     niou = iouv.numel()

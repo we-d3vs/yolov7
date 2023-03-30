@@ -316,7 +316,8 @@ def train(hyp, opt, device, tb_writer=None):
                 dataset.indices = random.choices(range(dataset.n), weights=iw, k=dataset.n)  # rand weighted idx
             # Broadcast if DDP
             if rank != -1:
-                indices = (torch.tensor(dataset.indices) if rank == 0 else torch.zeros(dataset.n)).int()
+                indices = ((torch.tensor(dataset.indices, device=model.device) if rank == 0
+                            else torch.zeros(dataset.n, device=model.device)).int())
                 dist.broadcast(indices, 0)
                 if rank != 0:
                     dataset.indices = indices.cpu().numpy()

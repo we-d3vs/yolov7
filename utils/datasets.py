@@ -17,7 +17,7 @@ cv2.setLogLevel(1)
 import numpy as np
 import torch
 import torch.nn.functional as F
-from PIL import Image, ExifTags
+from PIL import Image, ExifTags, UnidentifiedImageError
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
@@ -857,7 +857,7 @@ def read_pil(filename):
     ImageFile.LOAD_TRUNCATED_IMAGES = True
     try:
         img = PILImage.open(filename)
-    except FileNotFoundError:
+    except (FileNotFoundError, UnidentifiedImageError):
         return None
     img = img.convert('RGB')
     img = np.asarray(img)
