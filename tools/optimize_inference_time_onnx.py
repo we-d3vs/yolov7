@@ -2,7 +2,7 @@ import argparse
 import time
 import numpy as np
 # https://stackoverflow.com/questions/75267445/why-does-onnxruntime-fail-to-create-cudaexecutionprovider-in-linuxubuntu-20/75267493#75267493
-import torch
+# import torch
 import onnx
 import onnxruntime as ort
 from typing import Dict, List
@@ -87,7 +87,7 @@ if __name__ == "__main__":
 
 
     # Finally we compute the average latency for the optimized model:
-    optimized_model = load_model("yolov7_optimized.pth")
+    optimized_model = load_model(optimize_model_name)
     for i in range(10):
         optimized_model(x)
 
