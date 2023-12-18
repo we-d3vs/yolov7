@@ -1,0 +1,6 @@
+train: ./we_data/v1.1.0.json
+val: ./we_data/v1.1.0_test.json
+test: ./we_data/v1.1.0_test.json
+
+nc: 16
+names: ['top', 'vest', 'one-piece', 'bottom', 'headwear', 'underwear', 'swimwear', 'jewellery', 'accessory', 'shoe', 'bag', 'knitwear|sweatshirt', 'shorts', 'skirt', 'jacket', 'coat']
