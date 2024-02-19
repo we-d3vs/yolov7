@@ -884,7 +884,9 @@ def load_image(self, index):
         path = self.img_files[index]
         #img = imread_fallback("/dev/shm/private-dataset/" + path)
         #if img is None:
-        img = imread_fallback("/media/nas/private-dataset/" + path)
+        img = imread_fallback("/media/nvme/private-dataset/" + path)
+        if img is None:
+            img = imread_fallback("/media/nas/private-dataset/" + path)
         # img = cv2.imread(path)  # BGR
         assert img is not None, 'Image Not Found ' + path
         h0, w0 = img.shape[:2]  # orig hw
