@@ -189,8 +189,9 @@ class ONNX_ORT(nn.Module):
         selected_boxes = boxes[X, Y, :]
         selected_categories = category_id[X, Y, :].float()
         selected_scores = max_score[X, Y, :]
+        selected_all_scores = scores[X, Y, :]
         X = X.unsqueeze(1).float()
-        return torch.cat([X, selected_boxes, selected_categories, selected_scores], 1)
+        return torch.cat([X, selected_boxes, selected_categories, selected_scores, selected_all_scores], 1)
 
 class ONNX_TRT(nn.Module):
     '''onnx module with TensorRT NMS operation.'''

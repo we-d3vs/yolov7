@@ -137,7 +137,8 @@ def test(data,
             targets[:, 2:] *= torch.Tensor([width, height, width, height]).to(device)  # to pixels
             lb = [targets[targets[:, 0] == i, 1:] for i in range(nb)] if save_hybrid else []  # for autolabelling
             t = time_synchronized()
-            out = non_max_suppression(out, conf_thres=conf_thres, iou_thres=iou_thres, labels=lb, multi_label=True)
+            out = non_max_suppression(out, conf_thres=conf_thres, iou_thres=iou_thres, labels=lb, multi_label=True,
+                                      use_all_labels=opt.save_all_categories)
             t1 += time_synchronized() - t
 
         # Statistics per image
@@ -188,10 +189,13 @@ def test(data,
                 box = xyxy2xywh(predn[:, :4])  # xywh
                 box[:, :2] -= box[:, 2:] / 2  # xy center to top-left corner
                 for p, b in zip(pred.tolist(), box.tolist()):
-                    jdict.append({'image_id': image_id,
-                                  'category_id': coco91class[int(p[5])] if is_coco else int(p[5]),
-                                  'bbox': [round(x, 3) for x in b],
-                                  'score': round(p[4], 5)})
+                    item = {'image_id': image_id,
+                            'category_id': coco91class[int(p[5])] if is_coco else int(p[5]),
+                            'bbox': [round(x, 3) for x in b],
+                            'score': round(p[4], 5)}
+                    if opt.save_all_categories:
+                        item["all_scores"] = [round(conf, 5) for i, conf in enumerate(p[6:])]
+                    jdict.append(item)
 
             # Assign all predictions as incorrect
             correct = torch.zeros(pred.shape[0], niou, dtype=torch.bool, device=device)
@@ -327,6 +331,7 @@ if __name__ == '__main__':
     parser.add_argument('--project', default='runs/test', help='save to project/name')
     parser.add_argument('--name', default='exp', help='save to project/name')
     parser.add_argument('--exist-ok', action='store_true', help='existing project/name ok, do not increment')
+    parser.add_argument('--save-all-categories', action='store_true', help='save all category prediction score for each box')
     parser.add_argument('--no-trace', action='store_true', help='don`t trace model')
     parser.add_argument('--v5-metric', action='store_true', help='assume maximum recall as 1.0 in AP calculation')
     opt = parser.parse_args()

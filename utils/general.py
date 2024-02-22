@@ -606,8 +606,18 @@ def box_diou(box1, box2, eps: float = 1e-7):
 
 
 def non_max_suppression(prediction, conf_thres=0.25, iou_thres=0.45, classes=None, agnostic=False, multi_label=False,
-                        labels=()):
+                        labels=(),
+                        use_all_labels=False):
     """Runs Non-Maximum Suppression (NMS) on inference results
+
+    Args:
+        prediction (Tensor): nx(4+1+nclasses) (x1, y1, x2, y2, conf, class0 score, class1 score, ...)
+        conf_thres (float): object confidence threshold
+        iou_thres (float): IoU threshold for NMS
+        classes (int or list): filter by class: integer (class index) or list of integers, None for all classes
+        agnostic (bool): class-agnostic NMS
+        multi_label (bool): use multi-label version of NMS
+        labels (list Tensor): [targets, shapes], targets = labels to plot, shapes = shapes to plot
 
     Returns:
          list of detections, on (n,6) tensor per image [xyxy, conf, cls]
@@ -640,7 +650,7 @@ def non_max_suppression(prediction, conf_thres=0.25, iou_thres=0.45, classes=Non
             v[:, 4] = 1.0  # conf
             v[range(len(l)), l[:, 0].long() + 5] = 1.0  # cls
             x = torch.cat((x, v), 0)
-
+        x_ori = x.clone()
         # If none remain process next image
         if not x.shape[0]:
             continue
@@ -649,24 +659,26 @@ def non_max_suppression(prediction, conf_thres=0.25, iou_thres=0.45, classes=Non
         if nc == 1:
             x[:, 5:] = x[:, 4:5] # for models with one class, cls_loss is 0 and cls_conf is always 0.5,
                                  # so there is no need to multiplicate.
+            x_ori[:, 5:] = x_ori[:, 4:5]
         else:
             x[:, 5:] *= x[:, 4:5]  # conf = obj_conf * cls_conf
-
+            x_ori[:, 5:] *= x_ori[:, 4:5]
         # Box (center x, center y, width, height) to (x1, y1, x2, y2)
         box = xywh2xyxy(x[:, :4])
-
+        x_ori[:, :4] = xywh2xyxy(x_ori[:, :4])
         # Detections matrix nx6 (xyxy, conf, cls)
         if multi_label:
             i, j = (x[:, 5:] > conf_thres).nonzero(as_tuple=False).T
             x = torch.cat((box[i], x[i, j + 5, None], j[:, None].float()), 1)
+            x_ori = x_ori[i]
         else:  # best class only
             conf, j = x[:, 5:].max(1, keepdim=True)
             x = torch.cat((box, conf, j.float()), 1)[conf.view(-1) > conf_thres]
-
+            x_ori = x_ori[conf.view(-1) > conf_thres]
         # Filter by class
         if classes is not None:
             x = x[(x[:, 5:6] == torch.tensor(classes, device=x.device)).any(1)]
-
+            x_ori = x_ori[(x_ori[:, 5:6] == torch.tensor(classes, device=x.device)).any(1)]
         # Apply finite constraint
         # if not torch.isfinite(x).all():
         #     x = x[torch.isfinite(x).all(1)]
@@ -677,7 +689,7 @@ def non_max_suppression(prediction, conf_thres=0.25, iou_thres=0.45, classes=Non
             continue
         elif n > max_nms:  # excess boxes
             x = x[x[:, 4].argsort(descending=True)[:max_nms]]  # sort by confidence
-
+            x_ori = x_ori[x_ori[:, 4].argsort(descending=True)[:max_nms]]  # sort by confidence
         # Batched NMS
         c = x[:, 5:6] * (0 if agnostic else max_wh)  # classes
         boxes, scores = x[:, :4] + c, x[:, 4]  # boxes (offset by class), scores
@@ -691,7 +703,8 @@ def non_max_suppression(prediction, conf_thres=0.25, iou_thres=0.45, classes=Non
             x[i, :4] = torch.mm(weights, x[:, :4]).float() / weights.sum(1, keepdim=True)  # merged boxes
             if redundant:
                 i = i[iou.sum(1) > 1]  # require redundancy
-
+        if use_all_labels:
+            x = torch.cat((x, x_ori[:, 5:]), 1)
         output[xi] = x[i]
         if (time.time() - t) > time_limit:
             print(f'WARNING: NMS time limit {time_limit}s exceeded')

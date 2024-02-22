@@ -355,6 +355,7 @@ class TracedModel(nn.Module):
         self.model.eval()
 
         self.detect_layer = self.model.model[-1]
+        # set the model to be traced so that the fwd will do only feature pyramid extraction
         self.model.traced = True
         
         rand_example = torch.rand(1, 3, img_size, img_size)
@@ -369,6 +370,10 @@ class TracedModel(nn.Module):
         print(" model is traced! \n") 
 
     def forward(self, x, augment=False, profile=False):
+        # extract feature pyramid
         out = self.model(x)
+        # apply the detector and return a tuple
+        # bsize x anchors x (x, y, w, h, obj score, class 0 score, class 1 score, ...)
+        # bsize x 3 x resolution/32 x resolution/32 x (4 + 1 + classnum)
         out = self.detect_layer(out)
         return out
