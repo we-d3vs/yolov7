@@ -2,41 +2,59 @@
 
 ## WE-fashion data training
 ### Training
-```
+```bash
 nice -n1 python3 train.py --workers 8 --device 0 --batch-size 32 --data data/we_v111.yaml --img 640 640 --cfg cfg/training/yolov7_we.yaml --weights '' --name ${EXP_NAME} --hyp data/hyp.scratch.p5.yaml
 ```
 
 #### Trainig Tricks
 Training the model from scratch takes time and only small batch size is allowed. We could start by training from the scratch using small batch size for 20 epochs, and fine tune last N layers with bigger batch size for another 20 epochs, and etc.
 #### Train from the scratch
-```python
+```bash
 nice -n1 python3 train.py --workers 8 --device 0 --batch-size 32 --data data/we_v111.yaml --img 640 640 --cfg cfg/training/yolov7_we.yaml --weights '' --name ${EXP_NAME} --hyp data/hyp.scratch.p5.yaml --image-weights --epochs 20 --exist-ok
 ```
 
 Rememer to use `--sync_bn` for multi gpu training.
 
 ##### Fine tuning [from layer3]
-```python
+```bash
 nice -n1 python3 train.py --workers 8 --device 0 --batch-size 32 --data data/we_v111.yaml --img 640 640 --cfg cfg/training/yolov7_we.yaml --name ${EXP_NAME}_fn3 --hyp data/hyp.scratch.p5.yaml  --image-weights --epochs 20 --exist-ok --weights runs/train/${EXP_NAME}/weights/last.pt --freeze 3
 ```
 
 ##### Fine tuning [from layer25]
-```python
+```bash
 nice -n1 python3 train.py --workers 8 --device 0 --batch-size $bsize --data data/we_v111.yaml --img 640 640 --cfg cfg/training/yolov7_we.yaml --name ${EXP_NAME}_fn25 --hyp data/hyp.scratch.p5.yaml  --image-weights --epochs 20 --exist-ok --weights runs/train/${EXP_NAME}_fn3/weights/last.pt --freeze 25
 ```
 
 ##### Fine tuning [from layer38]
-```python
+```bash
 nice -n1 python3 train.py --workers 8 --device 0 --batch-size $bsize --data data/we_v111.yaml --img 640 640 --cfg cfg/training/yolov7_we.yaml --name ${EXP_NAME}_fn38 --hyp data/hyp.scratch.p5.yaml  --image-weights --epochs 20 --exist-ok --weights runs/train/${EXP_NAME}_fn25/weights/last.pt --freeze 25
 ```
 
 ##### Fine tuning [from layer51]
-```python
+```bash
 nice -n1 python3 train.py --workers 8 --device 0 --batch-size $bsize --data data/we_v111.yaml --img 640 640 --cfg cfg/training/yolov7_we.yaml --name ${EXP_NAME}_fn51 --hyp data/hyp.scratch.p5.yaml  --image-weights --epochs 20 --exist-ok --weights runs/train/${EXP_NAME}_fn38/weights/last.pt --freeze 51
 ```
 
 ### Testing
+#### Extract detections in json files
+```bash
+coco_fname=we_data/tmp/vinted_images_part0.json
+nice -n1 python3 test.py --batch-size 8 \
+    --data ${coco_fname} --device $DEVICE_ID \
+    --weights runs/train/yolov7-we-v111-image-weights-freeze51/weights/last.pt \
+    --save-json --name yolov7-we-v111-image-weights_640_vinted_part0 --exist-ok \
+    --save-all-categories # store all category prediction score for each box
+```
+It will store all detections in `runs/test/yolov7-we-v111-image-weights_640_vinted_part0/last_predictions.json` file. Next, we have to filter the irrelevant detections by class specific threshold.
 
+```bash
+coco_fname=we_data/tmp/vinted_images_part0.json
+prediction_fname=runs/test/yolov7-we-v111-image-weights_640_vinted_part0/last_predictions.json
+
+python3 tools/postprocess_detections.py --input ${prediction_fname} \
+    --coco ${coco_fname} \
+    --out /media/ssd480/detections/yolov7-we-v111
+```
 
 ### Bbox extraction
 
